@@ -1,0 +1,32 @@
+.{
+    .name = .sokol_2d,
+    .version = "0.0.0",
+    .fingerprint = 0xf2edba15a93ae3e2,
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig.git#ee31971e1e3001cbe3e80bc7ac73e38046ee6722",
+            .hash = "sokol-0.1.0-pb1HK6KkLADZ67wG6foFxCnd4-K56gDyhwKA1XgSR2CM",
+        },
+        .sokol_2d = .{
+            .path = "../sokol_2d",
+        },
+        .geom = .{
+            .url = "git+https://github.com/Games-by-Mason/geom#53ba19d8f51ab05481ddffbee4bb1a6bdd1c845e",
+            .hash = "geom-0.0.0-U1ma37AKAQBCoMadEkHNHxNPV5--jUhoRHwzU_SnrGqC",
+        },
+        .slot_map = .{
+            .url = "git+https://github.com/Games-by-Mason/SlotMap#ea7a2b370037466ce3ba3a95396596d9e0093320",
+            .hash = "slot_map-0.0.0-xUe6_H1IAADMa8Jat8O2V0gPsMISZM5AxxhGwPDKUb1a",
+        },
+        .imgui = .{
+            .url = "git+https://github.com/floooh/dcimgui.git#3969c14f7c7abda0e4b59d2616b17b7fb9eb0827",
+            .hash = "cimgui-0.1.0-44ClkTt5hgBU8BelH8W_G8mso3ys_hrqNUWwJvaxXDs5",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
