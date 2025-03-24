@@ -23,6 +23,10 @@
             .url = "git+https://github.com/floooh/dcimgui.git#3969c14f7c7abda0e4b59d2616b17b7fb9eb0827",
             .hash = "cimgui-0.1.0-44ClkTt5hgBU8BelH8W_G8mso3ys_hrqNUWwJvaxXDs5",
         },
+        .tween = .{
+            .url = "git+https://github.com/Games-by-Mason/Tween#d61a717e77b35fe7ac8c9e23aa621886b2dab3ee",
+            .hash = "tween-0.0.0-xnWBlDutAACQ1eXR17oI0ub3VoJD8w6RRokdDLO5IvhM",
+        },
     },
     .paths = .{
         "build.zig",

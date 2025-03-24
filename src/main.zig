@@ -5,7 +5,10 @@ const geo = @import("geom");
 const Input = @import("Input.zig");
 const SlotMap = @import("slot_map").SlotMap;
 const simgui = sokol.imgui;
+const interp = @import("tween").interp;
+const ease = @import("tween").ease;
 const ig = @import("imgui");
+const Color = Sokol2d.Color;
 
 var state: State = .{};
 
@@ -14,15 +17,18 @@ const save_file_name = "autosave.level";
 const Level = struct {
     points: std.ArrayListUnmanaged(Point),
     joints: std.ArrayListUnmanaged(Joint),
+    aabbs: std.ArrayListUnmanaged(Sokol2d.AABB),
 
     pub const empty: Level = .{
         .joints = .empty,
         .points = .empty,
+        .aabbs = .empty,
     };
 
     const Header = extern struct {
         points_len: u32,
         joints_len: u32,
+        aabbs_len: u32,
     };
 
     pub fn save(level: *Level, file_path: []const u8) !void {
@@ -31,10 +37,12 @@ const Level = struct {
         var header: Header = .{
             .points_len = @intCast(level.points.items.len),
             .joints_len = @intCast(level.joints.items.len),
+            .aabbs_len = @intCast(level.aabbs.items.len),
         };
 
         const points_bytes = std.mem.sliceAsBytes(level.points.items);
         const joints_bytes = std.mem.sliceAsBytes(level.joints.items);
+        const aabbs_bytes = std.mem.sliceAsBytes(level.aabbs.items);
         var iovec = [_]std.posix.iovec_const{
             .{
                 .base = std.mem.asBytes(&header),
@@ -47,6 +55,10 @@ const Level = struct {
             .{
                 .base = joints_bytes.ptr,
                 .len = joints_bytes.len,
+            },
+            .{
+                .base = aabbs_bytes.ptr,
+                .len = aabbs_bytes.len,
             },
         };
         try file.writevAll(&iovec);
@@ -65,16 +77,20 @@ const Level = struct {
         var level: Level = .{
             .points = .empty,
             .joints = .empty,
+            .aabbs = .empty,
         };
 
         try level.points.resize(gpa, header.points_len);
         errdefer level.points.deinit(gpa);
         try level.joints.resize(gpa, header.joints_len);
         errdefer level.joints.deinit(gpa);
+        try level.aabbs.resize(gpa, header.aabbs_len);
+        errdefer level.aabbs.deinit(gpa);
 
         const points_bytes = std.mem.sliceAsBytes(level.points.items);
         const joints_bytes = std.mem.sliceAsBytes(level.joints.items);
-        var iovec = [2]std.posix.iovec{
+        const aabbs_bytes = std.mem.sliceAsBytes(level.aabbs.items);
+        var iovec = [_]std.posix.iovec{
             .{
                 .base = points_bytes.ptr,
                 .len = points_bytes.len,
@@ -82,6 +98,10 @@ const Level = struct {
             .{
                 .base = joints_bytes.ptr,
                 .len = joints_bytes.len,
+            },
+            .{
+                .base = aabbs_bytes.ptr,
+                .len = aabbs_bytes.len,
             },
         };
         _ = try file.readvAll(&iovec);
@@ -97,6 +117,8 @@ const Level = struct {
     }
 };
 
+const meters_per_pixel = 1;
+
 const State = struct {
     gpa: std.mem.Allocator = undefined,
 
@@ -105,18 +127,27 @@ const State = struct {
 
     input: Input = .init,
 
-    prev_point: ?Point.Index = null,
+    aabb_starting_point: ?geo.Vec2 = null,
+    selected: ?Point.Index = null,
     level: Level = .empty,
 
     save_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
+    load_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
 
-    mode: enum {
+    brush: enum {
+        delete,
+        new_points,
+        move,
+        new_aabb,
+    } = .new_points,
+    sim_mode: enum {
         play,
         stop,
     } = .stop,
 
+    friction: f32 = 0.5,
     gravity_g: f32 = 10,
-    spring: f32 = 0.01,
+    spring: f32 = 10,
     mass: f32 = 1,
 };
 
@@ -126,11 +157,13 @@ const Point = extern struct {
     kind: enum(u8) {
         dinamic,
         static,
+        dead,
 
         fn color(p: @This()) Sokol2d.Color {
             return switch (p) {
                 .dinamic => .red,
                 .static => .black,
+                else => unreachable,
             };
         }
     } = .dinamic,
@@ -142,11 +175,28 @@ const Joint = extern struct {
     to: Point.Index,
     length: f32,
 
+    const dead: Joint = .{
+        .from = 0,
+        .to = 0,
+        .length = 0,
+    };
+
     pub fn actualLength(joint: Joint, points: []const Point) f32 {
         const from_point = &points[joint.from];
         const to_point = &points[joint.to];
 
         return from_point.pos.dist(to_point.pos);
+    }
+
+    pub fn stress(joint: Joint, points: []const Point) f32 {
+        const from_point = &points[joint.from];
+        const to_point = &points[joint.to];
+
+        return from_point.pos.dist(to_point.pos) - joint.length;
+    }
+
+    pub fn isDead(j: Joint) bool {
+        return j.from == j.to;
     }
 };
 
@@ -176,6 +226,7 @@ fn init() callconv(.c) void {
 
 fn findPoint(points: []const Point, pos: geo.Vec2, distance: f32) ?Point.Index {
     for (points, 0..) |point, index| {
+        if (point.kind == .dead) continue;
         if (point.pos.distSq(pos) < distance * distance) {
             return @intCast(index);
         }
@@ -209,6 +260,28 @@ fn addJoint(gpa: std.mem.Allocator, level: *Level, from: Point.Index, to: Point.
     });
 }
 
+fn checkIntersectionPointAABB(point: geo.Vec2, aabb: Sokol2d.AABB) bool {
+    const min_x = @min(aabb.start.x, aabb.end.x);
+    const max_x = @max(aabb.start.x, aabb.end.x);
+    const min_y = @min(aabb.start.y, aabb.end.y);
+    const max_y = @max(aabb.start.y, aabb.end.y);
+
+    return point.x > min_x and point.x < max_x and point.y < max_y and point.y > min_y;
+}
+
+fn closestPointToAABB(point: geo.Vec2, aabb: Sokol2d.AABB) geo.Vec2 {
+    const closest_y = if (@abs(point.y - aabb.start.y) < @abs(point.y - aabb.end.y)) aabb.start.y else aabb.end.y;
+    const closest_x = if (@abs(point.x - aabb.start.x) < @abs(point.x - aabb.end.x)) aabb.start.x else aabb.end.x;
+
+    return if (@abs(closest_y - point.y) < @abs(closest_x - point.x)) .{
+        .x = point.x,
+        .y = closest_y,
+    } else .{
+        .x = closest_x,
+        .y = point.y,
+    };
+}
+
 fn frame() callconv(.c) void {
     errdefer |e| fatal(e);
 
@@ -224,53 +297,124 @@ fn frame() callconv(.c) void {
     const dot_visual_radius = 10;
     const dot_click_radius = 20;
 
-    if (state.input.isMousePressed(.LEFT)) {
-        const point_index = getOrAddPoint(state.gpa, &state.level.points, mouse_pos);
+    switch (state.brush) {
+        .new_points => {
+            if (state.input.isMousePressed(.LEFT)) {
+                const point_index = getOrAddPoint(state.gpa, &state.level.points, mouse_pos);
 
-        if (state.prev_point) |prev| {
-            addJoint(state.gpa, &state.level, prev, point_index);
+                if (state.selected) |prev| {
+                    addJoint(state.gpa, &state.level, prev, point_index);
 
-            std.log.debug("mouse button at {}", .{state.input.mouse_position});
-            state.prev_point = null;
-        } else {
-            state.prev_point = point_index;
-        }
-    } else if (state.input.isMousePressed(.RIGHT)) blk: {
+                    state.selected = null;
+                } else {
+                    state.selected = point_index;
+                }
+            }
+        },
+        .move => {
+            if (state.input.isMousePressed(.LEFT)) {
+                state.selected = findPoint(state.level.points.items, mouse_pos, dot_click_radius);
+            }
+            if (state.input.isMouseDown(.LEFT)) blk: {
+                const point = state.selected orelse break :blk;
+
+                state.level.points.items[point].pos = mouse_pos;
+            }
+        },
+        .delete => {
+            if (state.input.isMousePressed(.LEFT)) delete: {
+                const point = findPoint(state.level.points.items, mouse_pos, dot_click_radius) orelse break :delete;
+                state.level.points.items[point].kind = .dead;
+                for (state.level.joints.items) |*joint| {
+                    if (joint.isDead()) continue;
+                    if (state.level.points.items[joint.from].kind == .dead or state.level.points.items[joint.to].kind == .dead)
+                        joint.* = .dead;
+                }
+            }
+        },
+        .new_aabb => {
+            if (state.input.isMousePressed(.LEFT)) {
+                state.aabb_starting_point = mouse_pos;
+            }
+            if (state.input.isMouseReleased(.LEFT)) blk: {
+                const point = state.aabb_starting_point orelse break :blk;
+                try state.level.aabbs.append(state.gpa, .{
+                    .start = point,
+                    .end = mouse_pos,
+                });
+            }
+        },
+    }
+
+    if (state.input.isMousePressed(.RIGHT)) blk: {
         const point = findPoint(state.level.points.items, mouse_pos, dot_click_radius) orelse break :blk;
 
         state.level.points.items[point].kind = switch (state.level.points.items[point].kind) {
             .static => .dinamic,
             .dinamic => .static,
+            else => unreachable,
         };
     } else if (state.input.isKeyPressed(.SPACE)) {
-        state.mode = switch (state.mode) {
+        state.sim_mode = switch (state.sim_mode) {
             .play => .stop,
             .stop => .play,
         };
-        std.log.info("state {s}", .{@tagName(state.mode)});
+        std.log.info("state {s}", .{@tagName(state.sim_mode)});
     }
 
     // UPDATE
-    if (state.mode == .play) {
-        for (state.level.points.items) |*point| {
-            if (point.kind == .static) continue;
+    if (state.sim_mode == .play) {
+        const simulation_steps = 10;
+        const step_delta_t = delta_t / simulation_steps;
+        for (0..simulation_steps) |_| {
+            // apply gravity
+            for (state.level.points.items) |*point| {
+                if (point.kind == .static) continue;
 
-            point.vel.addScaled(.y_pos, delta_t * state.gravity_g);
-            point.pos.addScaled(point.vel, delta_t);
+                point.vel.addScaled(.y_pos, step_delta_t * state.gravity_g);
+                point.vel.scale(@exp(-state.friction * delta_t));
+            }
+
+            // resolve joints forces
+            const points = state.level.points.items;
+            for (state.level.joints.items) |joint| {
+                if (joint.isDead()) continue;
+
+                const from_point = &points[joint.from];
+                const to_point = &points[joint.to];
+
+                const force = -joint.stress(points) * state.spring;
+                const dir = to_point.pos.minus(from_point.pos).normalized();
+                if (to_point.kind == .dinamic)
+                    to_point.vel.addScaled(dir, force / state.mass * step_delta_t);
+                if (from_point.kind == .dinamic)
+                    from_point.vel.addScaled(dir, -force / state.mass * step_delta_t);
+            }
+
+            // resolve move
+            for (state.level.points.items) |*point| {
+                if (point.kind != .dinamic) continue;
+                point.pos.addScaled(point.vel, step_delta_t);
+            }
+
+            // collide ground
+            for (state.level.aabbs.items) |aabb| {
+                for (state.level.points.items) |*point| {
+                    if (point.kind != .dinamic) continue;
+
+                    if (checkIntersectionPointAABB(point.pos, aabb)) {
+                        std.log.debug("intersected", .{});
+                        const closest_point = closestPointToAABB(point.pos, aabb);
+                        const axis = closest_point.minus(point.pos).normalized();
+                        point.vel.addScaled(axis, -point.vel.innerProd(axis));
+                        point.pos = closest_point;
+                    }
+                }
+            }
         }
     }
 
-    for (state.level.joints.items) |joint| {
-        const from_point = &state.level.points.items[joint.from];
-        const to_point = &state.level.points.items[joint.to];
-
-        const force = (joint.length - joint.actualLength(state.level.points.items)) * state.spring;
-        const dir = to_point.pos.minus(from_point.pos).normalized();
-        if (to_point.kind == .dinamic)
-            to_point.pos.addScaled(dir, force / state.mass * delta_t);
-        if (from_point.kind == .dinamic)
-            from_point.pos.addScaled(dir, -force / state.mass * delta_t);
-    }
+    const points = state.level.points.items;
 
     // DRAW
     state.sokol_2d.begin(.{
@@ -293,16 +437,28 @@ fn frame() callconv(.c) void {
         },
     });
 
+    // aabbs
+
+    for (state.level.aabbs.items) |aabb| {
+        state.sokol_2d.drawRect(aabb, .dark_gray);
+    }
+
     for (state.level.joints.items) |joint| {
-        const from_point = state.level.points.items[joint.from];
-        const to_point = state.level.points.items[joint.to];
-        state.sokol_2d.drawLine(from_point.pos, to_point.pos, 10, .yellow);
+        if (joint.isDead()) continue;
+
+        const from_point = points[joint.from];
+        const to_point = points[joint.to];
+        state.sokol_2d.drawLine(from_point.pos, to_point.pos, 10, interp.lerp(
+            Color.green,
+            Color.red,
+            1 / (1 + @exp(-joint.stress(points) - 0.5)),
+        ));
         state.sokol_2d.drawCircle(from_point.pos, dot_visual_radius, from_point.kind.color(), 30);
         state.sokol_2d.drawCircle(to_point.pos, dot_visual_radius, to_point.kind.color(), 30);
     }
 
-    if (state.prev_point) |point_index| {
-        const point = state.level.points.items[point_index];
+    if (state.selected) |point_index| {
+        const point = points[point_index];
         state.sokol_2d.drawCircle(point.pos, dot_visual_radius, .blue, 30);
     }
 
@@ -329,21 +485,33 @@ fn frame() callconv(.c) void {
         ig.igSetNextWindowSize(.{ .x = 400, .y = 400 }, ig.ImGuiCond_Once);
         _ = ig.igBegin("Hello Dear ImGui!", 0, ig.ImGuiWindowFlags_None);
         _ = ig.igText("Dear ImGui Version: %s", ig.IMGUI_VERSION);
-        _ = ig.igDragFloatEx("Gravity", &state.gravity_g, 0.1, 0.01, 20, "%f", 0);
-        _ = ig.igDragFloatEx("Spring", &state.spring, 0.1, 0.01, 5, "%f", 0);
+        _ = ig.igDragFloatEx("Gravity", &state.gravity_g, 0.1, 0.01, 100, "%f", 0);
+        _ = ig.igDragFloatEx("Spring", &state.spring, 0.1, 0.01, 100, "%f", 0);
         _ = ig.igDragFloatEx("Mass", &state.mass, 0.1, 0.05, 100, "%f", 0);
-        const name_buffer = &state.save_file_name;
-        _ = ig.igInputText("Save file name", name_buffer.ptr, name_buffer.len, 0);
+        _ = ig.igDragFloatEx("Friction", &state.friction, 0.1, 0.05, 100, "%f", 0);
+        _ = ig.igInputText("Save file name", (&state.save_file_name).ptr, state.save_file_name.len, 0);
+        _ = ig.igInputText("Load file name", (&state.load_file_name).ptr, state.load_file_name.len, 0);
         if (ig.igButton("Save file")) {
             try state.level.save(std.mem.span((&state.save_file_name).ptr));
         }
         if (ig.igButton("Load file")) load: {
-            const new_level = Level.load(state.gpa, std.mem.span((&state.save_file_name).ptr)) catch break :load;
+            const new_level = Level.load(state.gpa, std.mem.span((&state.load_file_name).ptr)) catch break :load;
             state.level.deinit(state.gpa);
             state.level = new_level;
+            state.selected = null;
         }
         if (ig.igButton("reset")) {
             state.level.deinit(state.gpa);
+            state.selected = null;
+        }
+        if (ig.igButton(@tagName(state.brush))) {
+            state.selected = null;
+            state.brush = switch (state.brush) {
+                .delete => .new_points,
+                .new_points => .move,
+                .move => .new_aabb,
+                .new_aabb => .delete,
+            };
         }
 
         ig.igEnd();

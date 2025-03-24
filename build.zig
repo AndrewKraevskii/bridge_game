@@ -22,6 +22,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const tween_dep = b.dependency("tween", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -33,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "geom", .module = geom_dep.module("geom") },
             .{ .name = "slot_map", .module = slot_map_dep.module("slot_map") },
             .{ .name = "imgui", .module = imgui_dep.module("cimgui") },
+            .{ .name = "tween", .module = tween_dep.module("tween") },
         },
     });
 

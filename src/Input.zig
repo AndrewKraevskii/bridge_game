@@ -53,12 +53,20 @@ pub fn isKeyDown(input: *const @This(), key: Keycode) bool {
     return input.keyboard_state.contains(key);
 }
 
-pub fn isMousePressed(input: *const @This(), key: Mousebutton) bool {
-    return input.mouse_button_down.contains(key) and !input.mouse_button_down_prev.contains(key);
-}
-
 pub fn isKeyPressed(input: *const @This(), key: Keycode) bool {
     return input.keyboard_state.contains(key) and !input.keyboard_state_prev.contains(key);
+}
+
+pub fn isMouseDown(input: *const @This(), key: Mousebutton) bool {
+    return input.mouse_button_down.contains(key);
+}
+
+pub fn isMouseReleased(input: *const @This(), key: Mousebutton) bool {
+    return !input.mouse_button_down.contains(key) and input.mouse_button_down_prev.contains(key);
+}
+
+pub fn isMousePressed(input: *const @This(), key: Mousebutton) bool {
+    return input.mouse_button_down.contains(key) and !input.mouse_button_down_prev.contains(key);
 }
 
 pub fn newFrame(input: *@This()) void {
