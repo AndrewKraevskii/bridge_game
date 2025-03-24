@@ -11,8 +11,6 @@ mouse_delta: geom.Vec2,
 mouse_position: geom.Vec2,
 mouse_button_down: std.EnumSet(Mousebutton),
 mouse_button_down_prev: std.EnumSet(Mousebutton),
-// left_button_down: bool,
-// right_button_down: bool,
 mouse_scroll: f32,
 
 pub const init: @This() = .{
@@ -35,11 +33,9 @@ pub fn consumeEvent(input: *@This(), ev: *const Event) void {
         },
         .KEY_DOWN => {
             if (ev.key_repeat) return;
-            // std.log.debug("key pressed: {s}", .{@tagName(ev.key_code)});
             input.keyboard_state.insert(ev.key_code);
         },
         .KEY_UP => {
-            // std.log.debug("key released: {s}", .{@tagName(ev.key_code)});
             input.keyboard_state.remove(ev.key_code);
         },
         .MOUSE_SCROLL => {

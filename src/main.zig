@@ -548,6 +548,12 @@ fn event(e: [*c]const sokol.app.Event) callconv(.c) void {
                 sokol.app.requestQuit();
             }
         },
+        .FILES_DROPPED => load_droped_level: {
+            const path = sokol.app.getDroppedFilePath(0);
+            const new_level = Level.load(state.gpa, path) catch break :load_droped_level;
+            state.level.deinit(state.gpa);
+            state.level = new_level;
+        },
         else => {},
     }
 }
@@ -566,6 +572,9 @@ pub fn main() void {
     state.gpa = gpa_state.allocator();
 
     sokol.app.run(.{
+        .enable_dragndrop = true,
+        .max_dropped_files = 1,
+        .max_dropped_file_path_length = std.fs.max_path_bytes,
         .init_cb = &init,
         .frame_cb = &frame,
         .cleanup_cb = &deinit,
