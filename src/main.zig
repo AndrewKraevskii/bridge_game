@@ -18,6 +18,7 @@ const Level = struct {
     points: std.ArrayListUnmanaged(Point),
     joints: std.ArrayListUnmanaged(Joint),
     aabbs: std.ArrayListUnmanaged(Sokol2d.AABB),
+    // rigid_body: std.ArrayListUnmanaged(RigidBody),
 
     pub const empty: Level = .{
         .joints = .empty,
@@ -32,35 +33,29 @@ const Level = struct {
     };
 
     pub fn save(level: *const Level, file_path: []const u8) !void {
+        var timer = std.time.Timer.start() catch unreachable;
+        defer std.log.info("saved in {d}", .{std.fmt.fmtDuration(timer.read())});
+
         const file = try std.fs.cwd().createFile(file_path, .{});
         defer file.close();
+
         var header: Header = .{
             .points_len = @intCast(level.points.items.len),
             .joints_len = @intCast(level.joints.items.len),
             .aabbs_len = @intCast(level.aabbs.items.len),
         };
-
-        const points_bytes = std.mem.sliceAsBytes(level.points.items);
-        const joints_bytes = std.mem.sliceAsBytes(level.joints.items);
-        const aabbs_bytes = std.mem.sliceAsBytes(level.aabbs.items);
-        var iovec = [_]std.posix.iovec_const{
-            .{
-                .base = std.mem.asBytes(&header),
-                .len = @sizeOf(Header),
-            },
-            .{
-                .base = points_bytes.ptr,
-                .len = points_bytes.len,
-            },
-            .{
-                .base = joints_bytes.ptr,
-                .len = joints_bytes.len,
-            },
-            .{
-                .base = aabbs_bytes.ptr,
-                .len = aabbs_bytes.len,
-            },
+        var iovec: [1 + 3]std.posix.iovec_const = undefined;
+        iovec[0] = .{
+            .base = std.mem.asBytes(&header),
+            .len = @sizeOf(Header),
         };
+        inline for (iovec[1..], .{ "points", "joints", "aabbs" }) |*io, field| {
+            const bytes: []u8 = @ptrCast(@field(level, field).items);
+            io.* = .{
+                .base = bytes.ptr,
+                .len = bytes.len,
+            };
+        }
         try file.writevAll(&iovec);
         std.log.info("saved to {s}", .{file_path});
     }
@@ -69,6 +64,9 @@ const Level = struct {
         gpa: std.mem.Allocator,
         file_path: []const u8,
     ) !Level {
+        var timer = std.time.Timer.start() catch unreachable;
+        defer std.log.info("loaded in {d}", .{std.fmt.fmtDuration(timer.read())});
+
         const file = try std.fs.cwd().openFile(file_path, .{});
         defer file.close();
 
@@ -79,31 +77,18 @@ const Level = struct {
             .joints = .empty,
             .aabbs = .empty,
         };
+        errdefer level.deinit(gpa);
 
-        try level.points.resize(gpa, header.points_len);
-        errdefer level.points.deinit(gpa);
-        try level.joints.resize(gpa, header.joints_len);
-        errdefer level.joints.deinit(gpa);
-        try level.aabbs.resize(gpa, header.aabbs_len);
-        errdefer level.aabbs.deinit(gpa);
+        var iovec: [3]std.posix.iovec = undefined;
+        inline for (&iovec, .{ "points", "joints", "aabbs" }) |*io, field| {
+            try @field(level, field).resize(gpa, @field(header, field ++ "_len"));
+            const bytes: []u8 = @ptrCast(@field(level, field).items);
+            io.* = .{
+                .base = bytes.ptr,
+                .len = bytes.len,
+            };
+        }
 
-        const points_bytes = std.mem.sliceAsBytes(level.points.items);
-        const joints_bytes = std.mem.sliceAsBytes(level.joints.items);
-        const aabbs_bytes = std.mem.sliceAsBytes(level.aabbs.items);
-        var iovec = [_]std.posix.iovec{
-            .{
-                .base = points_bytes.ptr,
-                .len = points_bytes.len,
-            },
-            .{
-                .base = joints_bytes.ptr,
-                .len = joints_bytes.len,
-            },
-            .{
-                .base = aabbs_bytes.ptr,
-                .len = aabbs_bytes.len,
-            },
-        };
         _ = try file.readvAll(&iovec);
         std.log.info("read from {s}", .{file_path});
 
@@ -116,40 +101,6 @@ const Level = struct {
         l.aabbs.deinit(gpa);
         l.* = undefined;
     }
-};
-
-const meters_per_pixel = 1;
-
-const State = struct {
-    gpa: std.mem.Allocator = undefined,
-
-    sokol_2d: Sokol2d = undefined,
-    load_action: sokol.gfx.PassAction = .{},
-
-    input: Input = .init,
-
-    aabb_starting_point: ?geo.Vec2 = null,
-    selected: ?Point.Index = null,
-    level: Level = .empty,
-
-    save_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
-    load_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
-
-    brush: enum {
-        delete,
-        new_points,
-        move,
-        aabb,
-    } = .new_points,
-    sim_mode: enum {
-        play,
-        stop,
-    } = .stop,
-
-    friction: f32 = 0.1,
-    gravity_g: f32 = 200,
-    spring: f32 = 400,
-    mass: f32 = 1,
 };
 
 const Point = extern struct {
@@ -199,6 +150,44 @@ const Joint = extern struct {
     pub fn isDead(j: Joint) bool {
         return j.from == j.to;
     }
+};
+
+const RigidBody = extern struct {
+    pos: geo.Vec2,
+};
+
+const meters_per_pixel = 1;
+
+const State = struct {
+    gpa: std.mem.Allocator = undefined,
+
+    sokol_2d: Sokol2d = undefined,
+    load_action: sokol.gfx.PassAction = .{},
+
+    input: Input = .init,
+
+    aabb_starting_point: ?geo.Vec2 = null,
+    selected: ?Point.Index = null,
+    level: Level = .empty,
+
+    save_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
+    load_file_name: [100:0]u8 = save_file_name.* ++ [1]u8{0} ** 86,
+
+    brush: enum {
+        delete,
+        new_points,
+        move,
+        aabb,
+    } = .new_points,
+    sim_mode: enum {
+        play,
+        stop,
+    } = .stop,
+
+    friction: f32 = 0.1,
+    gravity_g: f32 = 200,
+    spring: f32 = 400,
+    mass: f32 = 1,
 };
 
 fn init() callconv(.c) void {
