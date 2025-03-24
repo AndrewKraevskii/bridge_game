@@ -18,19 +18,26 @@ const Level = struct {
     points: std.ArrayListUnmanaged(Point),
     joints: std.ArrayListUnmanaged(Joint),
     aabbs: std.ArrayListUnmanaged(Sokol2d.AABB),
-    // rigid_body: std.ArrayListUnmanaged(RigidBody),
+    rigid_body: std.ArrayListUnmanaged(RigidBody),
+
+    const version: u32 = 3;
 
     pub const empty: Level = .{
         .joints = .empty,
         .points = .empty,
         .aabbs = .empty,
+        .rigid_body = .empty,
     };
 
     const Header = extern struct {
+        version: u32,
         points_len: u32,
         joints_len: u32,
         aabbs_len: u32,
+        rigid_body_len: u32,
     };
+
+    const fields = .{ "points", "joints", "aabbs", "rigid_body" };
 
     pub fn save(level: *const Level, file_path: []const u8) !void {
         var timer = std.time.Timer.start() catch unreachable;
@@ -39,17 +46,18 @@ const Level = struct {
         const file = try std.fs.cwd().createFile(file_path, .{});
         defer file.close();
 
-        var header: Header = .{
-            .points_len = @intCast(level.points.items.len),
-            .joints_len = @intCast(level.joints.items.len),
-            .aabbs_len = @intCast(level.aabbs.items.len),
-        };
-        var iovec: [1 + 3]std.posix.iovec_const = undefined;
+        var header: Header = undefined;
+        header.version = version;
+        inline for (fields) |field| {
+            @field(header, field ++ "_len") = @intCast(@field(level, field).items.len);
+        }
+
+        var iovec: [1 + fields.len]std.posix.iovec_const = undefined;
         iovec[0] = .{
             .base = std.mem.asBytes(&header),
             .len = @sizeOf(Header),
         };
-        inline for (iovec[1..], .{ "points", "joints", "aabbs" }) |*io, field| {
+        inline for (iovec[1..], fields) |*io, field| {
             const bytes: []u8 = @ptrCast(@field(level, field).items);
             io.* = .{
                 .base = bytes.ptr,
@@ -71,16 +79,13 @@ const Level = struct {
         defer file.close();
 
         const header = try file.reader().readStruct(Header);
+        if (header.version != version) return error.VersionMissmatch;
 
-        var level: Level = .{
-            .points = .empty,
-            .joints = .empty,
-            .aabbs = .empty,
-        };
+        var level: Level = .empty;
         errdefer level.deinit(gpa);
 
-        var iovec: [3]std.posix.iovec = undefined;
-        inline for (&iovec, .{ "points", "joints", "aabbs" }) |*io, field| {
+        var iovec: [fields.len]std.posix.iovec = undefined;
+        inline for (&iovec, fields) |*io, field| {
             try @field(level, field).resize(gpa, @field(header, field ++ "_len"));
             const bytes: []u8 = @ptrCast(@field(level, field).items);
             io.* = .{
@@ -209,7 +214,7 @@ fn init() callconv(.c) void {
         .load_action = .LOAD,
     };
     state.level = Level.load(state.gpa, save_file_name) catch |e| switch (e) {
-        error.FileNotFound => .empty,
+        error.FileNotFound, error.VersionMissmatch => .empty,
         else => fatal(e),
     };
 }
