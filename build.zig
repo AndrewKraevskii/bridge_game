@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     sokol_2d_dep.module("sokol_2d").addImport("geom", geom_dep.module("geom"));
 
     const exe = b.addExecutable(.{
-        .name = "example",
+        .name = "bridge",
         .root_module = exe_mod,
         .use_llvm = use_llvm,
     });

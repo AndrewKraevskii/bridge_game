@@ -31,7 +31,7 @@ const Level = struct {
         aabbs_len: u32,
     };
 
-    pub fn save(level: *Level, file_path: []const u8) !void {
+    pub fn save(level: *const Level, file_path: []const u8) !void {
         const file = try std.fs.cwd().createFile(file_path, .{});
         defer file.close();
         var header: Header = .{
@@ -113,7 +113,8 @@ const Level = struct {
     pub fn deinit(l: *Level, gpa: std.mem.Allocator) void {
         l.joints.deinit(gpa);
         l.points.deinit(gpa);
-        l.* = .empty;
+        l.aabbs.deinit(gpa);
+        l.* = undefined;
     }
 };
 
@@ -138,16 +139,16 @@ const State = struct {
         delete,
         new_points,
         move,
-        new_aabb,
+        aabb,
     } = .new_points,
     sim_mode: enum {
         play,
         stop,
     } = .stop,
 
-    friction: f32 = 0.5,
-    gravity_g: f32 = 10,
-    spring: f32 = 10,
+    friction: f32 = 0.1,
+    gravity_g: f32 = 200,
+    spring: f32 = 400,
     mass: f32 = 1,
 };
 
@@ -155,18 +156,18 @@ const Point = extern struct {
     pos: geo.Vec2,
     vel: geo.Vec2 = .zero,
     kind: enum(u8) {
-        dinamic,
+        dynamic,
         static,
         dead,
 
         fn color(p: @This()) Sokol2d.Color {
             return switch (p) {
-                .dinamic => .red,
+                .dynamic => .red,
                 .static => .black,
                 else => unreachable,
             };
         }
-    } = .dinamic,
+    } = .dynamic,
     const Index = u32;
 };
 
@@ -319,6 +320,7 @@ fn frame() callconv(.c) void {
                 const point = state.selected orelse break :blk;
 
                 state.level.points.items[point].pos = mouse_pos;
+                state.level.points.items[point].vel = .zero;
             }
         },
         .delete => {
@@ -332,7 +334,7 @@ fn frame() callconv(.c) void {
                 }
             }
         },
-        .new_aabb => {
+        .aabb => {
             if (state.input.isMousePressed(.LEFT)) {
                 state.aabb_starting_point = mouse_pos;
             }
@@ -343,6 +345,17 @@ fn frame() callconv(.c) void {
                     .end = mouse_pos,
                 });
             }
+            if (state.input.isMousePressed(.RIGHT)) {
+                const aabbs = &state.level.aabbs;
+                var i: usize = 0;
+                while (i < aabbs.items.len) {
+                    if (checkIntersectionPointAABB(mouse_pos, aabbs.items[i])) {
+                        _ = aabbs.swapRemove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
         },
     }
 
@@ -350,8 +363,8 @@ fn frame() callconv(.c) void {
         const point = findPoint(state.level.points.items, mouse_pos, dot_click_radius) orelse break :blk;
 
         state.level.points.items[point].kind = switch (state.level.points.items[point].kind) {
-            .static => .dinamic,
-            .dinamic => .static,
+            .static => .dynamic,
+            .dynamic => .static,
             else => unreachable,
         };
     } else if (state.input.isKeyPressed(.SPACE)) {
@@ -385,25 +398,24 @@ fn frame() callconv(.c) void {
 
                 const force = -joint.stress(points) * state.spring;
                 const dir = to_point.pos.minus(from_point.pos).normalized();
-                if (to_point.kind == .dinamic)
+                if (to_point.kind == .dynamic)
                     to_point.vel.addScaled(dir, force / state.mass * step_delta_t);
-                if (from_point.kind == .dinamic)
+                if (from_point.kind == .dynamic)
                     from_point.vel.addScaled(dir, -force / state.mass * step_delta_t);
             }
 
             // resolve move
             for (state.level.points.items) |*point| {
-                if (point.kind != .dinamic) continue;
+                if (point.kind != .dynamic) continue;
                 point.pos.addScaled(point.vel, step_delta_t);
             }
 
             // collide ground
             for (state.level.aabbs.items) |aabb| {
                 for (state.level.points.items) |*point| {
-                    if (point.kind != .dinamic) continue;
+                    if (point.kind != .dynamic) continue;
 
                     if (checkIntersectionPointAABB(point.pos, aabb)) {
-                        std.log.debug("intersected", .{});
                         const closest_point = closestPointToAABB(point.pos, aabb);
                         const axis = closest_point.minus(point.pos).normalized();
                         point.vel.addScaled(axis, -point.vel.innerProd(axis));
@@ -485,10 +497,10 @@ fn frame() callconv(.c) void {
         ig.igSetNextWindowSize(.{ .x = 400, .y = 400 }, ig.ImGuiCond_Once);
         _ = ig.igBegin("Hello Dear ImGui!", 0, ig.ImGuiWindowFlags_None);
         _ = ig.igText("Dear ImGui Version: %s", ig.IMGUI_VERSION);
-        _ = ig.igDragFloatEx("Gravity", &state.gravity_g, 0.1, 0.01, 100, "%f", 0);
-        _ = ig.igDragFloatEx("Spring", &state.spring, 0.1, 0.01, 100, "%f", 0);
-        _ = ig.igDragFloatEx("Mass", &state.mass, 0.1, 0.05, 100, "%f", 0);
-        _ = ig.igDragFloatEx("Friction", &state.friction, 0.1, 0.05, 100, "%f", 0);
+        _ = ig.igDragFloatEx("Gravity", &state.gravity_g, 0.1, 0.01, 1000, "%f", 0);
+        _ = ig.igDragFloatEx("Spring", &state.spring, 0.1, 0.01, 1000, "%f", 0);
+        _ = ig.igDragFloatEx("Mass", &state.mass, 0.1, 0.05, 1000, "%f", 0);
+        _ = ig.igDragFloatEx("Friction", &state.friction, 0.1, 0.001, 10, "%f", 0);
         _ = ig.igInputText("Save file name", (&state.save_file_name).ptr, state.save_file_name.len, 0);
         _ = ig.igInputText("Load file name", (&state.load_file_name).ptr, state.load_file_name.len, 0);
         if (ig.igButton("Save file")) {
@@ -502,6 +514,7 @@ fn frame() callconv(.c) void {
         }
         if (ig.igButton("reset")) {
             state.level.deinit(state.gpa);
+            state.level = .empty;
             state.selected = null;
         }
         if (ig.igButton(@tagName(state.brush))) {
@@ -509,8 +522,8 @@ fn frame() callconv(.c) void {
             state.brush = switch (state.brush) {
                 .delete => .new_points,
                 .new_points => .move,
-                .move => .new_aabb,
-                .new_aabb => .delete,
+                .move => .aabb,
+                .aabb => .delete,
             };
         }
 
@@ -543,11 +556,13 @@ fn deinit() callconv(.c) void {
     state.level.save(save_file_name) catch |e| {
         std.log.err("Failed to save level :( {s}", .{@errorName(e)});
     };
+    state.level.deinit(state.gpa);
     state.sokol_2d.deinit(state.gpa);
 }
 
 pub fn main() void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
     state.gpa = gpa_state.allocator();
 
     sokol.app.run(.{
