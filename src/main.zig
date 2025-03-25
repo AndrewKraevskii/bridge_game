@@ -3,10 +3,8 @@ const Sokol2d = @import("sokol_2d");
 const sokol = @import("sokol");
 const geo = @import("geom");
 const Input = @import("Input.zig");
-const SlotMap = @import("slot_map").SlotMap;
 const simgui = sokol.imgui;
 const interp = @import("tween").interp;
-const ease = @import("tween").ease;
 const ig = @import("imgui");
 const Color = Sokol2d.Color;
 
@@ -161,7 +159,8 @@ const RigidBody = extern struct {
     pos: geo.Vec2,
 };
 
-const meters_per_pixel = 1;
+// TODO: use it
+// const meters_per_pixel = 1;
 
 const State = struct {
     gpa: std.mem.Allocator = undefined,
@@ -566,6 +565,7 @@ pub fn main() void {
     state.gpa = gpa_state.allocator();
 
     sokol.app.run(.{
+        .window_title = "bridge",
         .enable_dragndrop = true,
         .max_dropped_files = 1,
         .max_dropped_file_path_length = std.fs.max_path_bytes,

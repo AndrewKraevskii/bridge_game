@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -17,7 +16,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const geom_dep = b.dependency("geom", .{ .target = target, .optimize = optimize });
-    const slot_map_dep = b.dependency("slot_map", .{ .target = target, .optimize = optimize });
     const imgui_dep = b.dependency("imgui", .{
         .target = target,
         .optimize = optimize,
@@ -35,7 +33,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sokol_2d", .module = sokol_2d_dep.module("sokol_2d") },
             .{ .name = "sokol", .module = sokol_dep.module("sokol") },
             .{ .name = "geom", .module = geom_dep.module("geom") },
-            .{ .name = "slot_map", .module = slot_map_dep.module("slot_map") },
             .{ .name = "imgui", .module = imgui_dep.module("cimgui") },
             .{ .name = "tween", .module = tween_dep.module("tween") },
         },
